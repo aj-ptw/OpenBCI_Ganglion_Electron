@@ -269,6 +269,7 @@ const processAccelerometer = (msg, client) => {
 const _processCommandBLE = (msg, client) => {
   if (_.isNull(ganglionBLE)) {
     client.write(`${kTcpCmdCommand},${kTcpCodeErrorProtocolNotStarted}${kTcpStop}`);
+    return;
   }
   if (ganglionBLE.isConnected()) {
     ganglionBLE.write(msgElements[1])
@@ -314,6 +315,10 @@ const processCommand = (msg, client) => {
 };
 
 const _processConnectBLE = (msg, client) => {
+  if (_.isNull(ganglionBLE)) {
+    client.write(`${kTcpCmdConnect},${kTcpCodeErrorProtocolNotStarted}${kTcpStop}`);
+    return;
+  }
   let msgElements = msg.toString().split(',');
   if (ganglionBLE.isConnected()) {
     if (verbose) console.log('already connected');
@@ -668,6 +673,10 @@ const _processScanBLE = (msg, client) => {
       }
       break;
     case kTcpActionStatus:
+      if (_.isNull(ganglionBLE)) {
+        client.write(`${kTcpCmdScan},${kTcpCodeStatusNotScanning}${kTcpStop}`);
+        return;
+      }
       if (ganglionBLE.isSearching()) {
         client.write(`${kTcpCmdScan},${kTcpCodeStatusScanning}${kTcpStop}`);
       } else {
@@ -675,6 +684,10 @@ const _processScanBLE = (msg, client) => {
       }
       break;
     case kTcpActionStop:
+      if (_.isNull(ganglionBLE)) {
+        client.write(`${kTcpCmdScan},${kTcpCodeErrorProtocolNotStarted}${kTcpStop}`);
+        return;
+      }
       if (ganglionBLE.isSearching()) {
         _scanStopBLE(client, true)
           .then(() => {
@@ -736,14 +749,26 @@ const _scanStopWifi = (client, writeOutMessage) => {
 };
 
 const _processScanWifiStart = (client) => {
-  if (ssdpTimeout) {
-    if (verbose) console.log('scan stopped first');
-    _scanStopWifi();
-    if (verbose) console.log('scan started');
-    _scanStartWifi(client);
+  if (wifi.isSearching()) {
+    _scanStopWifi(client, false)
+      .then(() => {
+        if (verbose) console.log('scan stopped first');
+        return _scanStartWifi(client);
+      })
+      .then(() => {
+        if (verbose) console.log('scan started');
+      })
+      .catch((err) => {
+        if (verbose) console.log(`err stopping/starting scan ${err}`);
+      });
   } else {
-    if (verbose) console.log('no scan was running, before starting this scan.');
-    _scanStartWifi(client);
+    _scanStartWifi(client)
+      .then(() => {
+        if (verbose) console.log('no scan was running, before starting this scan.');
+      })
+      .catch((err) => {
+        if (verbose) console.log(`err starting new scan ${err}`);
+      });
   }
 };
 
