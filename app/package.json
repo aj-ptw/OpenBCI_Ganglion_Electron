@@ -13,6 +13,6 @@
     "lodash": "^4.16.6",
     "menubar": "^5.2.3",
     "openbci-ganglion": "^0.4.2",
-    "openbci-wifi": "0.0.1"
+    "openbci-wifi": "0.0.4"
   }
 }
