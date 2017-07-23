@@ -161,7 +161,7 @@ var accelerometerFunction = (client, accelDataCounts) => {
  */
 var sampleFunction = (client, sample) => {
   let packet = `${kTcpCmdData},${kTcpCodeSuccessSampleData},`;
-  if (curTcpProtocol == kTcpProtocolWiFi) {
+  if (curTcpProtocol === kTcpProtocolWiFi) {
     if (!sample.valid) {
       client.write(`${kTcpCmdData},${kTcpCodeBadPacketData}${kTcpStop}`);
       return;
@@ -374,11 +374,10 @@ const _connectWifi = (msg, client) => {
       return Promise.resolve();
     })
     .then(() => {
-      console.log("\n\n\nhey");
-      if (wifi.getNumberOfChannels() == 4) {
-        return wifi.setSampleRate(200);
+      if (wifi.getNumberOfChannels() === 4) {
+        return wifi.setSampleRate(1600);
       } else {
-        return wifi.setSampleRate(250);
+        return wifi.setSampleRate(1000);
       }
     })
     .catch((err) => {
@@ -387,7 +386,6 @@ const _connectWifi = (msg, client) => {
 };
 
 const _processConnectWifi = (msg, client) => {
-  console.log("uoy;sldkjf");
   if (wifi.isConnected()) {
     if (verbose) console.log('already connected');
     client.write(`${kTcpCmdConnect},${kTcpCodeErrorAlreadyConnected}${kTcpStop}`);
@@ -806,7 +804,7 @@ const _scanStartWifi = (client) => {
   const wifiFound = (obj) => {
     const localName = obj.localName;
     localArray.push(obj);
-    if (verbose) console.log(`Wifi shield found: ${obj}`);
+    if (verbose) console.log(`Wifi shield found: ${JSON.stringify(obj)}`);
     client.write(`${kTcpCmdScan},${kTcpCodeSuccessWifiShieldFound},${localName}${kTcpStop}`);
   };
   return new Promise((resolve, reject) => {
