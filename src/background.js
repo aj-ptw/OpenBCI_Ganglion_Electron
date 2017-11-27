@@ -6,7 +6,7 @@ import Cyton from 'openbci-cyton';
 import menubar from 'menubar';
 import * as _ from 'lodash';
 import { ipcMain } from 'electron';
-
+// import GanglionWebBLE from 'ganglion-ble';
 
 /** TCP */
 const k = Constants;
@@ -99,7 +99,7 @@ ipcMain.on("quit", () => {
 });
 
 const debug = false;
-const verbose = false;
+const verbose = true;
 const sendCounts = true;
 
 let syncingChanSettings = false;
