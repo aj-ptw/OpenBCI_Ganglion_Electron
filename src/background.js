@@ -3,6 +3,7 @@ import Ganglion from 'openbci-ganglion'; // native npm module
 import Wifi from 'openbci-wifi';
 import { Constants } from 'openbci-utilities';
 import Cyton from 'openbci-cyton';
+import Nexus from 'ptw-nexus';
 import menubar from 'menubar';
 import * as _ from 'lodash';
 import { ipcMain, dialog } from 'electron';
@@ -12,8 +13,10 @@ import path from 'path';
 const k = Constants;
 const kTcpActionSet = 'set';
 const kTcpActionStart = 'start';
-const kTcpActionStatus = 'status';
 const kTcpActionStop = 'stop';
+const kTcpActionStatus = 'status';
+const kTcpBoardTypeCyton = 'cyton';
+const kTcpBoardTypeNexus = 'nexus';
 const kTcpCmdAccelerometer = 'a';
 const kTcpCmdAuxData = 'g';
 const kTcpCmdBoardType = 'b';
@@ -24,6 +27,7 @@ const kTcpCmdData = 't';
 const kTcpCmdDisconnect = 'd';
 const kTcpCmdError = 'e';
 const kTcpCmdExamine = 'x';
+const kTcpCmdFlow = 'f';
 const kTcpCmdImpedance = 'i';
 const kTcpCmdLog = 'l';
 const kTcpCmdProtocol = 'p';
@@ -108,6 +112,7 @@ const sendCounts = true;
 
 let syncingChanSettings = false;
 let curTcpProtocol = kTcpProtocolBLE;
+let curBoardType = kTcpBoardTypeNexus;
 
 let ganglionHubError;
 /**
@@ -124,6 +129,11 @@ let wifi = new Wifi({
   burst: false
 });
 let cyton = new Cyton({
+  sendCounts,
+  verbose: verbose,
+  debug: debug
+});
+let nexus = new Nexus({
   sendCounts,
   verbose: verbose,
   debug: debug
@@ -187,6 +197,25 @@ net.createServer((client) => {
       }
       if (wifi.isSearching()) {
         _scanStopWifi(null, false).catch(console.log);
+      }
+    }
+    if (nexus) {
+      if (nexus.isStreaming()) {
+        nexus.streamStop()
+          .then(() => {
+            return nexus.disconnect();
+          })
+          .catch((err) => {
+            if (verbose) console.log(err);
+          })
+      } else if (nexus.isConnected()) {
+        nexus.disconnect()
+          .catch((err) => {
+            if (verbose) console.log(err);
+          })
+      }
+      if (nexus.isSearching()) {
+        _scanStopNexus(null, false).catch(console.log);
       }
     }
     if (cyton.isConnected()) {
@@ -356,6 +385,9 @@ const parseMessage = (msg, client) => {
     case kTcpCmdExamine:
       processExamine(msg, client);
       break;
+    case kTcpCmdFlow:
+      processFlow(msg, client);
+      break;
     case kTcpCmdAccelerometer:
       processAccelerometer(msg, client);
       break;
@@ -427,21 +459,25 @@ const processBoardType = (msg, client) => {
           client.write(`${kTcpCmdBoardType},${kTcpCodeErrorUnableToSetBoardType},${err.message}${kTcpStop}`);
         });
     }
+    curBoardType = boardType;
   } else if (curTcpProtocol === kTcpProtocolWiFi) {
-    if (wifi.getBoardType() === boardType) {
-      if (verbose) console.log('board type was already set correct');
-      client.write(`${kTcpCmdBoardType},${kTcpCodeSuccess},${boardType}${kTcpStop}`);
-    } else {
-      if (verbose) console.log('wifi currently connected to set board type');
-      let response = "";
-      if (wifi.getBoardType() === 'none') {
-        response = "WiFi Shield is not connected to any OpenBCI board";
+    if (boardType !== kTcpBoardTypeNexus) {
+      if (wifi.getBoardType() === boardType) {
+        if (verbose) console.log('board type was already set correct');
+        client.write(`${kTcpCmdBoardType},${kTcpCodeSuccess},${boardType}${kTcpStop}`);
       } else {
-        response = `Wifi is currently attached to ${wifi.getBoardType()} which is not the same number of channels or board type as selected`;
-      }
-      client.write(`${kTcpCmdBoardType},${kTcpCodeErrorUnableToSetBoardType},${response}${kTcpStop}`);
+        if (verbose) console.log('wifi currently connected to set board type');
+        let response = "";
+        if (wifi.getBoardType() === 'none') {
+          response = "WiFi Shield is not connected to any OpenBCI board";
+        } else {
+          response = `Wifi is currently attached to ${wifi.getBoardType()} which is not the same number of channels or board type as selected`;
+        }
+        client.write(`${kTcpCmdBoardType},${kTcpCodeErrorUnableToSetBoardType},${response}${kTcpStop}`);
 
+      }
     }
+    curBoardType = boardType;
   } else {
     client.write(`${kTcpCmdBoardType},${kTcpCodeErrorUnableToSetBoardType},${`Set protocol first to Serial or WiFi, cur protocol is ${curTcpProtocol}`}${kTcpStop}`);
   }
@@ -668,6 +704,33 @@ const _processConnectSerial = (msg, client) => {
   }
 };
 
+const _connectNexus = (msg, client) => {
+  let msgElements = msg.toString().split(',');
+
+  if (verbose) console.log(`Connecting to Nexus called ${msgElements[1]}`);
+  nexus.connect({
+      nexusName: msgElements[1]
+    })
+    .then(() => {
+      //TODO: Finish this connect
+      if (verbose) console.log("connect success");
+      client.write(`${kTcpCmdConnect},${kTcpCodeSuccess}${kTcpStop}`);
+      // nexus.on(k.OBCIEmitterRawDataPacket, console.log);
+      nexus.on('sample', sampleFunction.bind(null, client));
+      nexus.on('message', messageFunction.bind(null, client));
+      return Promise.resolve();
+    })
+    .catch((err) => {
+      nexusRemoveListeners();
+      if (verbose) console.log('connect nexus error:', err.message);
+      if (err.message === 'ERROR: CODE: 404 MESSAGE: Route Not Found\r\n') {
+        client.write(`${kTcpCmdConnect},${kTcpCodeErrorWifiNeedsUpdate},${err}${kTcpStop}`);
+      } else {
+        client.write(`${kTcpCmdConnect},${kTcpCodeErrorUnableToConnect},${err}${kTcpStop}`);
+      }
+    })
+};
+
 const _connectWifi = (msg, client) => {
   let msgElements = msg.toString().split(',');
 
@@ -683,12 +746,12 @@ const _connectWifi = (msg, client) => {
     }
   }
   wifi.connect({
-      latency: parseInt(msgElements[3]),
-      shieldName: msgElements[1],
-      sampleRate: parseInt(msgElements[2]),
-      protocol: internetProtocol,
-      burst: burst
-    })
+    latency: parseInt(msgElements[3]),
+    shieldName: msgElements[1],
+    sampleRate: parseInt(msgElements[2]),
+    protocol: internetProtocol,
+    burst: burst
+  })
     .then(() => {
       //TODO: Finish this connect
       if (verbose) console.log("connect success");
@@ -709,7 +772,33 @@ const _connectWifi = (msg, client) => {
     })
 };
 
-const _processConnectWifi = (msg, client) => {
+const _processConnectNexus = (msg, client) => {
+  if (nexus.isConnected()) {
+    if (verbose) console.log('Already connected');
+    client.write(`${kTcpCmdConnect},${kTcpCodeErrorAlreadyConnected}${kTcpStop}`);
+  } else {
+    if (verbose) console.log('Going to try and connect');
+    if (nexus.isSearching()) {
+      nexus.searchStop()
+        .then(() => {
+          if (verbose) console.log('Stopped search before connect');
+          nexus.removeAllListeners('nexusFound');
+          _connectNexus(msg, client);
+          return Promise.resolve();
+        })
+        .catch((err) => {
+          console.log("err", err);
+          client.write(`${kTcpCmdConnect},${kTcpCodeErrorScanCouldNotStop},${err}${kTcpStop}`);
+          return Promise.reject();
+        });
+    } else {
+      nexus.removeAllListeners('nexusFound');
+      _connectNexus(msg, client);
+    }
+  }
+};
+
+const _processConnectWifiShield = (msg, client) => {
   if (wifi.isConnected()) {
     if (verbose) console.log('Already connected');
     client.write(`${kTcpCmdConnect},${kTcpCodeErrorAlreadyConnected}${kTcpStop}`);
@@ -724,7 +813,7 @@ const _processConnectWifi = (msg, client) => {
           return Promise.resolve();
         })
         .catch((err) => {
-        console.log("err", err);
+          console.log("err", err);
           client.write(`${kTcpCmdConnect},${kTcpCodeErrorScanCouldNotStop},${err}${kTcpStop}`);
           return Promise.reject();
         });
@@ -732,6 +821,14 @@ const _processConnectWifi = (msg, client) => {
       wifi.removeAllListeners(k.OBCIEmitterWifiShield);
       _connectWifi(msg, client);
     }
+  }
+};
+
+const _processConnectWifi = (msg, client) => {
+  if (curBoardType === kTcpBoardTypeNexus) {
+    _processConnectNexus(msg, client);
+  } else {
+    _processConnectWifiShield(msg, client);
   }
 };
 
@@ -847,7 +944,23 @@ const _processDisconnectSerial = (client) => {
  * For processing incoming disconnect commands with ganglion ble
  * @param client {Object} - writable TCP client
  */
-const _processDisconnectWifi = (client) => {
+const _processDisconnectNexus = (client) => {
+  nexus.disconnect()
+    .then(() => {
+      client.write(`${kTcpCmdDisconnect},${kTcpCodeSuccess}${kTcpStop}`);
+      nexusRemoveListeners();
+    })
+    .catch((err) => {
+      client.write(`${kTcpCmdDisconnect},${kTcpCodeErrorUnableToDisconnect},${err}${kTcpStop}`);
+      nexusRemoveListeners();
+    });
+};
+
+/**
+ * For processing incoming disconnect commands with ganglion ble
+ * @param client {Object} - writable TCP client
+ */
+const _processDisonnectWifiShield = (client) => {
   wifi.disconnect()
     .then(() => {
       client.write(`${kTcpCmdDisconnect},${kTcpCodeSuccess}${kTcpStop}`);
@@ -857,6 +970,18 @@ const _processDisconnectWifi = (client) => {
       client.write(`${kTcpCmdDisconnect},${kTcpCodeErrorUnableToDisconnect},${err}${kTcpStop}`);
       wifiRemoveListeners();
     });
+};
+
+/**
+ * For processing incoming disconnect commands with ganglion ble
+ * @param client {Object} - writable TCP client
+ */
+const _processDisconnectWifi = (client) => {
+  if (curBoardType === kTcpBoardTypeNexus) {
+    _processDisconnectNexus(client);
+  } else {
+    _processDisonnectWifiShield(client);
+  }
 };
 
 /**
@@ -925,6 +1050,32 @@ const processExamine = (msg, client) => {
       wifi.removeAllListeners(k.OBCIEmitterWifiShield);
       _examineWifi(msg, client);
     }
+  }
+};
+
+/**
+ * For processing incoming disconnect commands with ganglion ble
+ * @param client {Object} - writable TCP client
+ */
+const processFlow = (msg, client) => {
+  let msgElements = msg.toString().split(',');
+  const action = msgElements[1];
+  if (action === kTcpActionStart) {
+    nexus.streamStart()
+      .then(() => {
+        client.write(`${kTcpCmdFlow},${kTcpCodeSuccess}${kTcpStop}`);
+      })
+      .catch((err) => {
+        client.write(`${kTcpCmdFlow},${kTcpCodeErrorUnknown},${err}${kTcpStop}`);
+      });
+  } else {
+    nexus.streamStop()
+      .then(() => {
+        client.write(`${kTcpCmdFlow},${kTcpCodeSuccess}${kTcpStop}`);
+      })
+      .catch((err) => {
+        client.write(`${kTcpCmdFlow},${kTcpCodeErrorUnknown},${err}${kTcpStop}`);
+      });
   }
 };
 
@@ -1084,7 +1235,22 @@ const _protocolStartSerial = () => {
   return Promise.resolve();
 };
 
-const _protocolStartWifi = () => {
+const _protocolStartWifiNexus = () => {
+  protocolSafeStart();
+  if (_.isNull(nexus)) {
+    nexus = new Nexus({
+      sendCounts: true,
+      verbose: verbose,
+      debug: debug
+    });
+  }
+
+  curTcpProtocol = kTcpProtocolWiFi;
+  return Promise.resolve();
+};
+
+
+const _protocolStartWifiShield = () => {
   protocolSafeStart();
   if (_.isNull(wifi)) {
     wifi = new Wifi({
@@ -1161,12 +1327,36 @@ const _processProtocolSerial = (msg, client) => {
   }
 };
 
-const _processProtocolWifi = (msg, client) => {
+const _processProtocolWifiNexus = (msg, client) => {
   let msgElements = msg.toString().split(',');
   const action = msgElements[1];
   switch (action) {
     case kTcpActionStart:
-      _protocolStartWifi()
+      _protocolStartWifiNexus()
+        .then(() => {
+          client.write(`${kTcpCmdProtocol},${kTcpCodeSuccess},${kTcpProtocolWiFi},${kTcpActionStart}${kTcpStop}`);
+        });
+      break;
+    case kTcpActionStatus:
+      if (nexus) {
+        client.write(`${kTcpCmdProtocol},${kTcpCodeStatusStarted}${kTcpStop}`);
+      } else {
+        client.write(`${kTcpCmdProtocol},${kTcpCodeStatusStopped}${kTcpStop}`);
+      }
+      break;
+    case kTcpActionStop:
+      nexusCleanup();
+      client.write(`${kTcpCmdProtocol},${kTcpCodeSuccess}${kTcpStop}`);
+      break;
+  }
+};
+
+const _processProtocolWifiShield = (msg, client) => {
+  let msgElements = msg.toString().split(',');
+  const action = msgElements[1];
+  switch (action) {
+    case kTcpActionStart:
+      _protocolStartWifiShield()
         .then(() => {
           client.write(`${kTcpCmdProtocol},${kTcpCodeSuccess},${kTcpProtocolWiFi},${kTcpActionStart}${kTcpStop}`);
         });
@@ -1182,6 +1372,14 @@ const _processProtocolWifi = (msg, client) => {
       wifiCleanup();
       client.write(`${kTcpCmdProtocol},${kTcpCodeSuccess}${kTcpStop}`);
       break;
+  }
+};
+
+const _processProtocolWifi = (msg, client) => {
+  if (curBoardType === kTcpBoardTypeNexus) {
+    _processProtocolWifiNexus(msg, client);
+  } else {
+    _processProtocolWifiShield(msg, client);
   }
 };
 
@@ -1327,8 +1525,61 @@ const _processScanBLE = (msg, client) => {
       break;
   }
 };
+
 let localArray = [];
-const _scanStartWifi = (client) => {
+const _scanStartWifiNexus = (client) => {
+  const nexusFound = (obj) => {
+    const localName = obj.localName;
+    localArray.push(obj);
+    if (verbose) console.log(`Nexus device found: ${obj}`);
+    client.write(`${kTcpCmdScan},${kTcpCodeSuccessWifiShieldFound},${localName}${kTcpStop}`);
+  };
+  const scanStopped = () => {
+    if (verbose) console.log('Scan stopped for Nexus devices');
+    if (client) client.write(`${kTcpCmdScan},${kTcpCodeTimeoutScanStopped}${kTcpStop}`);
+    nexusRemoveListeners();
+  };
+  return new Promise((resolve, reject) => {
+    nexus.on('nexusFound', nexusFound);
+    nexus.once('scanStopped', scanStopped);
+
+    nexus.searchStart()
+      .then(() => {
+        client.write(`${kTcpCmdScan},${kTcpCodeSuccess},${kTcpActionStart}${kTcpStop}`);
+        resolve();
+      })
+      .catch((err) => {
+        nexusRemoveListeners();
+        client.write(`${kTcpCmdScan},${kTcpCodeErrorScanCouldNotStart},${kTcpProtocolWiFi},${err}${kTcpStop}`);
+        reject(err);
+      });
+  });
+};
+
+/**
+ * Stop a scan
+ * @param client
+ * @param writeOutMessage
+ * @return {Promise}
+ * @private
+ */
+const _scanStopWifiNexus = (client, writeOutMessage) => {
+  return new Promise((resolve, reject) => {
+    if (_.isUndefined(writeOutMessage)) writeOutMessage = true;
+    nexusRemoveListeners();
+    nexus.searchStop()
+      .then(() => {
+        if (writeOutMessage) client.write(`${kTcpCmdScan},${kTcpCodeSuccess},${kTcpActionStop}${kTcpStop}`);
+        resolve();
+      })
+      .catch((err) => {
+        if (writeOutMessage) client.write(`${kTcpCmdScan},${kTcpCodeErrorScanCouldNotStop},${kTcpProtocolWiFi},${err}${kTcpStop}`);
+        reject(err);
+      });
+  });
+};
+
+const _scanStartWifiShield = (client) => {
   const wifiFound = (obj) => {
     const localName = obj.localName;
     localArray.push(obj);
@@ -1364,7 +1615,7 @@ const _scanStartWifi = (client) => {
  * @return {Promise}
  * @private
  */
-const _scanStopWifi = (client, writeOutMessage) => {
+const _scanStopWifiShield = (client, writeOutMessage) => {
   return new Promise((resolve, reject) => {
     if (_.isUndefined(writeOutMessage)) writeOutMessage = true;
     wifiRemoveListeners();
@@ -1379,6 +1630,30 @@ const _scanStopWifi = (client, writeOutMessage) => {
       });
   });
 };
+
+const _scanStartWifi = (client) => {
+  if (curBoardType === kTcpBoardTypeNexus) {
+    return _scanStartWifiNexus(client);
+  } else {
+    return _scanStartWifiShield(client);
+  }
+};
+
+/**
+ * Stop a scan
+ * @param client
+ * @param writeOutMessage
+ * @return {Promise}
+ * @private
+ */
+const _scanStopWifi = (client, writeOutMessage) => {
+  if (curBoardType === kTcpBoardTypeNexus) {
+    return _scanStopWifiNexus(client, writeOutMessage);
+  } else {
+    return _scanStopWifiShield(client, writeOutMessage);
+  }
+};
+
 const _processScanSerialStart = (client) => {
   if (_.isNull(cyton)) {
     _protocolStartSerial().catch(console.log);
@@ -1680,6 +1955,28 @@ const wifiCleanup = () => {
   }
 };
 
+const nexusRemoveListeners = () => {
+  nexus.removeAllListeners('nexusFound');
+  nexus.removeAllListeners('message');
+  nexus.removeAllListeners(k.OBCIEmitterSample);
+  nexus.removeAllListeners(k.OBCIEmitterImpedance);
+  nexus.removeAllListeners('scanStopped');
+};
+
+const nexusCleanup = () => {
+  if (nexus) {
+    nexusRemoveListeners();
+    if (nexus.isSearching()) {
+      _scanStopNexus(null, false).catch(console.log);
+    }
+    nexus.disconnect().catch(console.log);
+    if (nexus.wifiClient) {
+      nexus.wifiClient.stop();
+    }
+    nexus = null;
+  }
+};
+
 
 
 function exitHandler (options, err) {
@@ -1691,6 +1988,7 @@ function exitHandler (options, err) {
     if (verbose) console.log('exit');
     ganglionBLECleanup();
     cytonSerialCleanup();
+    nexusCleanup();
     wifiCleanup();
   }
 }
