@@ -107,7 +107,7 @@ ipcMain.on("quit", () => {
 });
 
 const debug = false;
-const verbose = false;
+const verbose = true;
 const sendCounts = true;
 
 let syncingChanSettings = false;
@@ -1676,7 +1676,34 @@ const _processScanSerialStart = (client) => {
     });
 };
 
-const _processScanWifiStart = (client) => {
+const _processScanWifiNexusStart = (client) => {
+  if (nexus.isSearching()) {
+    if (verbose) console.log('scan stopped first');
+    _scanStopWifiNexus(client, false)
+      .then(() => {
+        return _scanStartWifiNexus(client);
+      })
+      .then(() => {
+        client.write(`${kTcpCmdScan},${kTcpCodeSuccess},${kTcpActionStart}${kTcpStop}`);
+      })
+      .catch((err) => {
+        client.write(`${kTcpCmdScan},${kTcpCodeErrorScanCouldNotStart},${err}${kTcpStop}`);
+        console.log(err);
+      });
+  } else {
+    if (verbose) console.log('no scan was running, before starting this scan.');
+    _scanStartWifiNexus(client)
+      .then(() => {
+        client.write(`${kTcpCmdScan},${kTcpCodeSuccess},${kTcpActionStart}${kTcpStop}`);
+      })
+      .catch((err) => {
+        client.write(`${kTcpCmdScan},${kTcpCodeErrorScanCouldNotStart},${err}${kTcpStop}`);
+        console.log(err);
+      });
+  }
+};
+
+const _processScanWifiShieldStart = (client) => {
   if (wifi.isSearching()) {
     if (verbose) console.log('scan stopped first');
     _scanStopWifi(client, false)
@@ -1720,7 +1747,7 @@ const _processScanSerial = (msg, client) => {
 };
 
 
-const _processScanWifi = (msg, client) => {
+const _processScanWifiShield = (msg, client) => {
   let msgElements = msg.toString().split(',');
   const action = msgElements[1];
   switch (action) {
@@ -1731,11 +1758,11 @@ const _processScanWifi = (msg, client) => {
           if (err) {
             client.write(`${kTcpCmdScan},${kTcpCodeStatusNotScanning}${kTcpStop}`);
           } else {
-            _processScanWifiStart(client);
+            _processScanWifiShieldStart(client);
           }
         });
       } else {
-        _processScanWifiStart(client);
+        _processScanWifiShieldStart(client);
       }
       break;
     case kTcpActionStatus:
@@ -1747,7 +1774,43 @@ const _processScanWifi = (msg, client) => {
       break;
     case kTcpActionStop:
       if (wifi.isSearching()) {
-        _scanStopWifi().catch(console.log);
+        _scanStopWifiShield().catch(console.log);
+        client.write(`${kTcpCmdScan},${kTcpCodeSuccess},${kTcpActionStop}${kTcpStop}`);
+      } else {
+        client.write(`${kTcpCmdScan},${kTcpCodeErrorScanNoScanToStop}${kTcpStop}`);
+      }
+      break;
+  }
+};
+
+const _processScanWifiNexus = (msg, client) => {
+  let msgElements = msg.toString().split(',');
+  const action = msgElements[1];
+  switch (action) {
+    case kTcpActionStart:
+      if (_.isNull(nexus)) {
+        if (verbose) console.log("nexus not started, attempting to start before scan");
+        _protocolStartWifiNexus((err) => {
+          if (err) {
+            client.write(`${kTcpCmdScan},${kTcpCodeStatusNotScanning}${kTcpStop}`);
+          } else {
+            _processScanWifiNexusStart(client);
+          }
+        });
+      } else {
+        _processScanWifiNexusStart(client);
+      }
+      break;
+    case kTcpActionStatus:
+      if (nexus.isSearching()) {
+        client.write(`${kTcpCmdScan},${kTcpCodeStatusScanning}${kTcpStop}`);
+      } else {
+        client.write(`${kTcpCmdScan},${kTcpCodeStatusNotScanning}${kTcpStop}`);
+      }
+      break;
+    case kTcpActionStop:
+      if (wifi.isSearching()) {
+        _scanStopWifiNexus().catch(console.log);
         client.write(`${kTcpCmdScan},${kTcpCodeSuccess},${kTcpActionStop}${kTcpStop}`);
       } else {
         client.write(`${kTcpCmdScan},${kTcpCodeErrorScanNoScanToStop}${kTcpStop}`);
@@ -1764,7 +1827,11 @@ const _processScanWifi = (msg, client) => {
 const processScan = (msg, client) => {
   switch (curTcpProtocol) {
     case kTcpProtocolWiFi:
-      _processScanWifi(msg, client);
+      if (curBoardType === kTcpBoardTypeNexus) {
+        _processScanWifiNexus(msg, client);
+      } else {
+        _processScanWifiShield(msg, client);
+      }
       break;
     case kTcpProtocolSerial:
       _processScanSerial(msg, client);

@@ -18,6 +18,6 @@
     "openbci-ganglion": "^1.0.0",
     "openbci-utilities": "^0.2.7",
     "openbci-wifi": "^0.4.1",
-    "ptw-nexus": "0.0.2"
+    "ptw-nexus": "^0.0.5"
   }
 }
