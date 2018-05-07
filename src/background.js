@@ -709,7 +709,8 @@ const _connectNexus = (msg, client) => {
 
   if (verbose) console.log(`Connecting to Nexus called ${msgElements[1]}`);
   nexus.connect({
-      nexusName: msgElements[1]
+      nexusName: msgElements[1],
+    ipAddress: '192.168.1.196'
     })
     .then(() => {
       //TODO: Finish this connect
